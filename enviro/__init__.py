@@ -437,18 +437,12 @@ def save_reading(readings):
 
 # save the provided readings into a cache file for future uploading
 def cache_upload(readings):
-  payload = {
-    "nickname": config.nickname,
-    "timestamp": helpers.datetime_string(),
-    "readings": readings,
-    "model": model,
-    "uid": helpers.uid()
-  }
+  payload = dict(readings)  # Copy the readings
+  payload["timestamp"] = helpers.datetime_string()  # Add timestamp
 
   uploads_filename = f"uploads/{helpers.datetime_file_string()}.json"
   helpers.mkdir_safe("uploads")
   with open(uploads_filename, "w") as upload_file:
-    #json.dump(payload, upload_file) # TODO what it was changed to
     upload_file.write(ujson.dumps(payload))
 
 # return the number of cached results waiting to be uploaded
