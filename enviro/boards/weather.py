@@ -198,15 +198,17 @@ def get_sensor_readings(seconds_since_last, is_usb_power):
   
   # Compensate for USB power heating
   if is_usb_power:
-    logging.info(f"  - recorded temperature: {temperature}")
-    logging.info(f"  - recorded humidity: {humidity}")
-    
-    temperature -= config.usb_power_temperature_offset
-    absolute_humidity = helpers.relative_to_absolute_humidity(humidity, temperature)
-    humidity = helpers.absolute_to_relative_humidity(absolute_humidity, temperature)
-    
-    logging.info(f"  - USB adjusted temperature: {temperature}")
-    logging.info(f"  - USB adjusted humidity: {humidity}")
+      logging.info(f"  - recorded temperature: {temperature}")
+      logging.info(f"  - recorded humidity: {humidity}")
+      
+      adjusted_temperature = temperature - config.usb_power_temperature_offset
+      # Use ORIGINAL temperature here, not adjusted!
+      absolute_humidity = helpers.relative_to_absolute_humidity(humidity, temperature)
+      humidity = helpers.absolute_to_relative_humidity(absolute_humidity, adjusted_temperature)
+      temperature = adjusted_temperature
+      
+      logging.info(f"  - USB adjusted temperature: {temperature}")
+      logging.info(f"  - USB adjusted humidity: {humidity}")
   
   return OrderedDict({
     "temperature": round(temperature, 2),
