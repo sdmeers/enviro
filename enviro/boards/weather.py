@@ -3,7 +3,8 @@ from breakout_bme280 import BreakoutBME280
 from breakout_ltr559 import BreakoutLTR559
 from machine import Pin, PWM
 from pimoroni import Analog
-from enviro import i2c, activity_led
+from enviro import i2c, activity_led, config
+from ucollections import OrderedDict
 import enviro.helpers as helpers
 from phew import logging
 from enviro.constants import WAKE_REASON_RTC_ALARM, WAKE_REASON_BUTTON_PRESS
@@ -180,24 +181,40 @@ def rainfall(seconds_since_last):
 
   return amount, per_second
 
-def get_sensor_readings(seconds_since_last, is_usb_power):
-  # bme280 returns the register contents immediately and then starts a new reading
-  # we want the current reading so do a dummy read to discard register contents first
+def get_sensor_readings(seconds_since_last, is_usb_power):  
+  # BME280 returns cached values, so read twice to get fresh data
   bme280.read()
   time.sleep(0.1)
   bme280_data = bme280.read()
-
+  
+  # Get other sensor readings
   ltr_data = ltr559.get_reading()
   rain, rain_per_second = rainfall(seconds_since_last)
-
-  from ucollections import OrderedDict
+  
+  # Extract base readings
+  temperature = bme280_data[0]
+  humidity = bme280_data[2]
+  pressure = bme280_data[1] / 100.0
+  
+  # Compensate for USB power heating
+  if is_usb_power:
+    logging.info(f"  - recorded temperature: {temperature}")
+    logging.info(f"  - recorded humidity: {humidity}")
+    
+    temperature -= config.usb_power_temperature_offset
+    absolute_humidity = helpers.relative_to_absolute_humidity(humidity, temperature)
+    humidity = helpers.absolute_to_relative_humidity(absolute_humidity, temperature)
+    
+    logging.info(f"  - USB adjusted temperature: {temperature}")
+    logging.info(f"  - USB adjusted humidity: {humidity}")
+  
   return OrderedDict({
-    "temperature": round(bme280_data[0], 2),
-    "humidity": round(bme280_data[2], 2),
-    "pressure": round(bme280_data[1] / 100.0, 2),
+    "temperature": round(temperature, 2),
+    "humidity": round(humidity, 2),
+    "pressure": round(pressure, 2),
     "luminance": round(ltr_data[BreakoutLTR559.LUX], 2),
     "wind_speed": wind_speed(),
+    "wind_direction": wind_direction(),
     "rain": rain,
-    "rain_per_second": rain_per_second,
-    "wind_direction": wind_direction()
+    "rain_rate": rain_per_second  # Changed from rain_per_second
   })
