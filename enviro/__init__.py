@@ -161,101 +161,160 @@ def reconnect_wifi(ssid, password, country, hostname=None):
   import ubinascii
   
   start_ms = time.ticks_ms()
+  wlan = None
 
-  # Set country
-  rp2.country(country)
-
-  # Set hostname
-  if hostname is None:
-      hostname = f"EnviroW-{helpers.uid()[-4:]}"
-  network.hostname(hostname)
-
-  # Reference: https://datasheets.raspberrypi.com/picow/connecting-to-the-internet-with-pico-w.pdf
-  CYW43_LINK_DOWN = 0
-  CYW43_LINK_JOIN = 1
-  CYW43_LINK_NOIP = 2
-  CYW43_LINK_UP = 3
-  CYW43_LINK_FAIL = -1
-  CYW43_LINK_NONET = -2
-  CYW43_LINK_BADAUTH = -3
-
-  status_names = {
-    CYW43_LINK_DOWN: "Link is down",
-    CYW43_LINK_JOIN: "Connected to wifi",
-    CYW43_LINK_NOIP: "Connected to wifi, but no IP address",
-    CYW43_LINK_UP: "Connect to wifi with an IP address",
-    CYW43_LINK_FAIL: "Connection failed",
-    CYW43_LINK_NONET: "No matching SSID found (could be out of range, or down)",
-    CYW43_LINK_BADAUTH: "Authenticatation failure",
-  }
-
-  wlan = network.WLAN(network.STA_IF)
-
-  def dump_status():
-    status = wlan.status()
-    logging.info(f"> active: {1 if wlan.active() else 0}, status: {status} ({status_names[status]})")
-    return status
-
-  # Return True on expected status, exception on error status (negative) and False on timeout
-  def wait_status(expected_status, *, timeout=10, tick_sleep=0.5):
-    for i in range(math.ceil(timeout / tick_sleep)):
-      time.sleep(tick_sleep)
-      status = dump_status()
-      if status == expected_status:
-        return True
-      if status < 0:
-        raise Exception(status_names[status])
-    return False
-
-  wlan.active(True)
-  # Disable power saving mode if on USB power
-  if vbus_present:
-    wlan.config(pm=0xa11140)
-
-  # Print MAC
-  mac = ubinascii.hexlify(wlan.config('mac'),':').decode()
-  logging.info("> MAC: " + mac)
-  
-  # Disconnect when necessary
-  status = dump_status()
-  if status >= CYW43_LINK_JOIN and status < CYW43_LINK_UP:
-    logging.info("> Disconnecting...")
-    wlan.disconnect()
-    try:
-      wait_status(CYW43_LINK_DOWN)
-    except Exception as x:
-      raise Exception(f"Failed to disconnect: {x}")
-  logging.info("> Ready for connection!")
-
-  # Connect to our AP
-  logging.info(f"> Connecting to SSID {ssid} (password: {password})...")
-  wlan.connect(ssid, password)
   try:
-    wait_status(CYW43_LINK_UP)
-  except Exception as x:
-    raise Exception(f"Failed to connect to SSID {ssid} (password: {password}): {x}")
-  logging.info("> Connected successfully!")
+    # Set country
+    rp2.country(country)
 
-  ip, subnet, gateway, dns = wlan.ifconfig()
-  logging.info(f"> IP: {ip}, Subnet: {subnet}, Gateway: {gateway}, DNS: {dns}")
-  
-  elapsed_ms = time.ticks_ms() - start_ms
-  logging.info(f"> Elapsed: {elapsed_ms}ms")
-  return elapsed_ms
+    # Set hostname
+    if hostname is None:
+        hostname = f"EnviroW-{helpers.uid()[-4:]}"
+    network.hostname(hostname)
+
+    # Reference: https://datasheets.raspberrypi.com/picow/connecting-to-the-internet-with-pico-w.pdf
+    CYW43_LINK_DOWN = 0
+    CYW43_LINK_JOIN = 1
+    CYW43_LINK_NOIP = 2
+    CYW43_LINK_UP = 3
+    CYW43_LINK_FAIL = -1
+    CYW43_LINK_NONET = -2
+    CYW43_LINK_BADAUTH = -3
+
+    status_names = {
+      CYW43_LINK_DOWN: "Link is down",
+      CYW43_LINK_JOIN: "Connected to wifi",
+      CYW43_LINK_NOIP: "Connected to wifi, but no IP address",
+      CYW43_LINK_UP: "Connect to wifi with an IP address",
+      CYW43_LINK_FAIL: "Connection failed",
+      CYW43_LINK_NONET: "No matching SSID found (could be out of range, or down)",
+      CYW43_LINK_BADAUTH: "Authenticatation failure",
+    }
+
+    wlan = network.WLAN(network.STA_IF)
+
+    def dump_status():
+      status = wlan.status()
+      logging.info(f"> active: {1 if wlan.active() else 0}, status: {status} ({status_names[status]})")
+      return status
+
+    # Return True on expected status, exception on error status (negative) and False on timeout
+    def wait_status(expected_status, *, timeout=10, tick_sleep=0.5):
+      deadline = time.ticks_add(time.ticks_ms(), int(timeout * 1000))
+      while time.ticks_diff(deadline, time.ticks_ms()) > 0:
+        time.sleep(tick_sleep)
+        try:
+          status = dump_status()
+          if status == expected_status:
+            return True
+          if status < 0:
+            raise Exception(status_names[status])
+        except Exception as e:
+          # If we can't get status, something is badly wrong
+          logging.error(f"> Error getting WiFi status: {e}")
+          raise
+      return False
+
+    # Force a clean state
+    try:
+      wlan.active(False)
+      time.sleep(0.5)
+    except:
+      pass  # Ignore errors during cleanup
+
+    wlan.active(True)
+    time.sleep(0.5)  # Give WiFi time to initialize
+    
+    # Disable power saving mode if on USB power
+    if vbus_present:
+      wlan.config(pm=0xa11140)
+
+    # Print MAC
+    mac = ubinascii.hexlify(wlan.config('mac'),':').decode()
+    logging.info("> MAC: " + mac)
+    
+    # Disconnect when necessary
+    status = dump_status()
+    if status >= CYW43_LINK_JOIN and status < CYW43_LINK_UP:
+      logging.info("> Disconnecting...")
+      wlan.disconnect()
+      try:
+        wait_status(CYW43_LINK_DOWN)
+      except Exception as x:
+        raise Exception(f"Failed to disconnect: {x}")
+    logging.info("> Ready for connection!")
+
+    # Connect to our AP
+    logging.info(f"> Connecting to SSID {ssid}...")  # Never log password!
+    wlan.connect(ssid, password)
+    
+    # Wait for connection with explicit timeout handling
+    try:
+      connected = wait_status(CYW43_LINK_UP, timeout=15)  # Increased timeout
+      if not connected:
+        # Timeout occurred - wait_status returned False
+        final_status = wlan.status()
+        raise Exception(f"Connection timeout - final status: {status_names.get(final_status, final_status)}")
+    except Exception as x:
+      # Either wait_status raised an exception (negative status) or we raised timeout exception
+      raise Exception(f"Failed to connect to SSID {ssid}: {x}")
+      
+    logging.info("> Connected successfully!")
+
+    ip, subnet, gateway, dns = wlan.ifconfig()
+    logging.info(f"> IP: {ip}, Subnet: {subnet}, Gateway: {gateway}, DNS: {dns}")
+    
+    elapsed_ms = time.ticks_diff(time.ticks_ms(), start_ms)
+    logging.info(f"> Elapsed: {elapsed_ms}ms")
+    return elapsed_ms
+
+  except Exception as e:
+    # Ensure cleanup on any error
+    logging.error(f"> WiFi connection error: {e}")
+    if wlan:
+      try:
+        wlan.disconnect()
+        wlan.active(False)
+      except:
+        pass  # Best effort cleanup
+    raise  # Re-raise the exception
 
 def connect_to_wifi():
-  try:
-    logging.info(f"> connecting to wifi network '{config.wifi_ssid}'")
-    elapsed_ms = reconnect_wifi(config.wifi_ssid, config.wifi_password, config.wifi_country)
-    # a slow connection time will drain the battery faster and may
-    # indicate a poor quality connection
-    seconds_to_connect = elapsed_ms / 1000
-    if seconds_to_connect > 5:
-      logging.warn("  - took", seconds_to_connect, "seconds to connect to wifi")
-    return True
-  except Exception as x:
-    logging.error(f"! {x}")
-    return False
+  max_retries = 2
+  retry_delay = 2  # seconds
+  
+  for attempt in range(max_retries):
+    try:
+      if attempt > 0:
+        logging.info(f"> retry attempt {attempt + 1}/{max_retries}")
+        time.sleep(retry_delay)
+      
+      logging.info(f"> connecting to wifi network '{config.wifi_ssid}'")
+      elapsed_ms = reconnect_wifi(config.wifi_ssid, config.wifi_password, config.wifi_country)
+      
+      # a slow connection time will drain the battery faster and may
+      # indicate a poor quality connection
+      seconds_to_connect = elapsed_ms / 1000
+      if seconds_to_connect > 5:
+        logging.warn("  - took", seconds_to_connect, "seconds to connect to wifi")
+      return True
+      
+    except Exception as x:
+      logging.error(f"! Connection attempt {attempt + 1} failed: {x}")
+      # Cleanup between retries
+      try:
+        import network
+        wlan = network.WLAN(network.STA_IF)
+        wlan.disconnect()
+        wlan.active(False)
+        time.sleep(1)
+      except:
+        pass
+      
+      if attempt == max_retries - 1:
+        return False
+  
+  return False
 
 # log the error, blink the warning led, and go back to sleep
 def halt(message):
@@ -314,35 +373,52 @@ def is_clock_set():
 # connect to wifi and attempt to fetch the current time from an ntp server
 def sync_clock_from_ntp():
   from phew import ntp
+  
   if not connect_to_wifi():
     return False
-  #TODO Fetch only does one attempt. Can also optionally set Pico RTC (do we want this?)
-  timestamp = ntp.fetch()
-  if not timestamp:
-    logging.error("  - failed to fetch time from ntp server")
-    return False  
-
-  # fixes an issue where sometimes the RTC would not pick up the new time
-  i2c.writeto_mem(0x51, 0x00, b'\x10') # reset the rtc so we can change the time
-  rtc.datetime(timestamp) # set the time on the rtc chip
-  i2c.writeto_mem(0x51, 0x00, b'\x00') # ensure rtc is running
-  rtc.enable_timer_interrupt(False)
-
-  # read back the RTC time to confirm it was updated successfully
-  dt = rtc.datetime()
-  if dt != timestamp[0:7]:
-    logging.error("  - failed to update rtc")
-    if helpers.file_exists("sync_time.txt"):
-      os.remove("sync_time.txt")
-    return False
-
-  logging.info("  - rtc synched")
   
-  # write out the sync time log
-  with open("sync_time.txt", "w") as syncfile:
-    syncfile.write("{0:04d}-{1:02d}-{2:02d}T{3:02d}:{4:02d}:{5:02d}Z".format(*timestamp))  
+  try:
+    # Set a timeout for NTP fetch
+    timestamp = ntp.fetch()
+    if not timestamp:
+      logging.error("  - failed to fetch time from ntp server")
+      return False  
 
-  return True
+    # fixes an issue where sometimes the RTC would not pick up the new time
+    i2c.writeto_mem(0x51, 0x00, b'\x10') # reset the rtc so we can change the time
+    rtc.datetime(timestamp) # set the time on the rtc chip
+    i2c.writeto_mem(0x51, 0x00, b'\x00') # ensure rtc is running
+    rtc.enable_timer_interrupt(False)
+
+    # read back the RTC time to confirm it was updated successfully
+    dt = rtc.datetime()
+    if dt != timestamp[0:7]:
+      logging.error("  - failed to update rtc")
+      if helpers.file_exists("sync_time.txt"):
+        os.remove("sync_time.txt")
+      return False
+
+    logging.info("  - rtc synched")
+    
+    # write out the sync time log
+    with open("sync_time.txt", "w") as syncfile:
+      syncfile.write("{0:04d}-{1:02d}-{2:02d}T{3:02d}:{4:02d}:{5:02d}Z".format(*timestamp))  
+
+    return True
+    
+  except Exception as e:
+    logging.error(f"  - NTP sync failed: {e}")
+    return False
+    
+  finally:
+    # Always disconnect after NTP
+    try:
+      import network
+      wlan = network.WLAN(network.STA_IF)
+      wlan.disconnect()
+      wlan.active(False)
+    except:
+      pass
 
 # set the state of the warning led (off, on, blinking)
 def warn_led(state):
@@ -458,12 +534,19 @@ def is_upload_needed():
 
 # upload cached readings to the configured destination
 def upload_readings():
-  if not connect_to_wifi():
-    logging.error(f"  - cannot upload readings, wifi connection failed")
-    return False
-
-  destination = config.destination
+  wlan = None
+  connected = False
+  
   try:
+    connected = connect_to_wifi()
+    if not connected:
+      logging.error(f"  - cannot upload readings, wifi connection failed")
+      return False
+
+    import network
+    wlan = network.WLAN(network.STA_IF)
+    
+    destination = config.destination
     exec(f"import enviro.destinations.{destination}")
     destination_module = sys.modules[f"enviro.destinations.{destination}"]
     destination_module.log_destination()
@@ -511,15 +594,22 @@ def upload_readings():
   except ImportError:
     logging.error(f"! cannot find destination {destination}")
     return False
+    
+  except Exception as e:
+    logging.error(f"! upload error: {e}")
+    return False
 
   finally:
-    # Disconnect wifi
-    import network
-    logging.info("> Disconnecting wireless after upload")
-    wlan = network.WLAN(network.STA_IF)
-    wlan.active(True)
-    wlan.disconnect()
-    wlan.active(False)
+    # ALWAYS disconnect WiFi, even on failure
+    if wlan or connected:
+      try:
+        import network
+        logging.info("> Disconnecting wireless after upload")
+        wlan = network.WLAN(network.STA_IF)
+        wlan.disconnect()
+        wlan.active(False)
+      except Exception as e:
+        logging.error(f"! Error disconnecting WiFi: {e}")
 
   return True
 

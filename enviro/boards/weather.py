@@ -204,7 +204,7 @@ def get_sensor_readings(seconds_since_last, is_usb_power):
       adjusted_temperature = temperature - config.usb_power_temperature_offset
       # Use ORIGINAL temperature here, not adjusted!
       absolute_humidity = helpers.relative_to_absolute_humidity(humidity, temperature)
-      humidity = helpers.absolute_to_relative_humidity(absolute_humidity, adjusted_temperature)
+      humidity = min(100.0, helpers.absolute_to_relative_humidity(absolute_humidity, adjusted_temperature))
       temperature = adjusted_temperature
       
       logging.info(f"  - USB adjusted temperature: {temperature}")
