@@ -172,7 +172,7 @@ def reconnect_wifi(ssid, password, country, hostname=None):
         hostname = f"EnviroW-{helpers.uid()[-4:]}"
     network.hostname(hostname)
 
-    # Reference: https://datasheets.raspberrypi.com/picow/connecting-to-the-internet-with-pico-w.pdf
+    # WiFi status constants
     CYW43_LINK_DOWN = 0
     CYW43_LINK_JOIN = 1
     CYW43_LINK_NOIP = 2
@@ -198,7 +198,6 @@ def reconnect_wifi(ssid, password, country, hostname=None):
       logging.info(f"> active: {1 if wlan.active() else 0}, status: {status} ({status_names[status]})")
       return status
 
-    # Return True on expected status, exception on error status (negative) and False on timeout
     def wait_status(expected_status, *, timeout=10, tick_sleep=0.5):
       deadline = time.ticks_add(time.ticks_ms(), int(timeout * 1000))
       while time.ticks_diff(deadline, time.ticks_ms()) > 0:
@@ -210,20 +209,19 @@ def reconnect_wifi(ssid, password, country, hostname=None):
           if status < 0:
             raise Exception(status_names[status])
         except Exception as e:
-          # If we can't get status, something is badly wrong
           logging.error(f"> Error getting WiFi status: {e}")
           raise
       return False
 
-    # Force a clean state
+    # Force a clean state - critical for recovering from stuck connections
     try:
       wlan.active(False)
       time.sleep(0.5)
     except:
-      pass  # Ignore errors during cleanup
+      pass
 
     wlan.active(True)
-    time.sleep(0.5)  # Give WiFi time to initialize
+    time.sleep(0.5)
     
     # Disable power saving mode if on USB power
     if vbus_present:
@@ -236,33 +234,63 @@ def reconnect_wifi(ssid, password, country, hostname=None):
     # Disconnect when necessary
     status = dump_status()
     if status >= CYW43_LINK_JOIN and status < CYW43_LINK_UP:
-      logging.info("> Disconnecting...")
+      logging.info("> Disconnecting from previous connection...")
       wlan.disconnect()
       try:
-        wait_status(CYW43_LINK_DOWN)
+        wait_status(CYW43_LINK_DOWN, timeout=5)
       except Exception as x:
         raise Exception(f"Failed to disconnect: {x}")
     logging.info("> Ready for connection!")
 
     # Connect to our AP
-    logging.info(f"> Connecting to SSID {ssid}...")  # Never log password!
+    logging.info(f"> Connecting to SSID {ssid}...")
     wlan.connect(ssid, password)
     
-    # Wait for connection with explicit timeout handling
+    # First wait for WiFi association (status 1)
     try:
-      connected = wait_status(CYW43_LINK_UP, timeout=15)  # Increased timeout
-      if not connected:
-        # Timeout occurred - wait_status returned False
-        final_status = wlan.status()
-        raise Exception(f"Connection timeout - final status: {status_names.get(final_status, final_status)}")
+      associated = wait_status(CYW43_LINK_JOIN, timeout=10)
+      if not associated:
+        # Check if we got straight to LINK_UP (skip JOIN)
+        if wlan.status() != CYW43_LINK_UP:
+          final_status = wlan.status()
+          raise Exception(f"WiFi association timeout - final status: {status_names.get(final_status, final_status)}")
     except Exception as x:
-      # Either wait_status raised an exception (negative status) or we raised timeout exception
-      raise Exception(f"Failed to connect to SSID {ssid}: {x}")
+      raise Exception(f"Failed to associate with SSID {ssid}: {x}")
+    
+    # Now wait for DHCP to assign IP address (status 3)
+    # This is where your device is failing - increase timeout significantly
+    try:
+      got_ip = wait_status(CYW43_LINK_UP, timeout=30)  # Increased from 15 to 30
+      if not got_ip:
+        final_status = wlan.status()
+        # If we're stuck at LINK_NOIP, it's a DHCP issue
+        if final_status == CYW43_LINK_NOIP:
+          raise Exception(f"DHCP timeout - connected to WiFi but no IP address assigned after 30s")
+        else:
+          raise Exception(f"Connection timeout - final status: {status_names.get(final_status, final_status)}")
+    except Exception as x:
+      raise Exception(f"Failed to get IP address from SSID {ssid}: {x}")
       
     logging.info("> Connected successfully!")
 
+    # Get connection info
     ip, subnet, gateway, dns = wlan.ifconfig()
     logging.info(f"> IP: {ip}, Subnet: {subnet}, Gateway: {gateway}, DNS: {dns}")
+    
+    # Check signal strength - warn if weak
+    try:
+      # Get RSSI (Received Signal Strength Indicator)
+      # Note: This may not be available on all Pico W firmware versions
+      status_info = wlan.status('rssi')
+      logging.info(f"> Signal strength: {status_info} dBm")
+      
+      # Warn if signal is weak
+      if status_info < -75:
+        logging.warn(f"  ! Weak WiFi signal ({status_info} dBm) - connection may be unstable")
+        logging.warn(f"  ! Consider moving device closer to router or adding WiFi extender")
+    except:
+      # RSSI not available on this firmware
+      pass
     
     elapsed_ms = time.ticks_diff(time.ticks_ms(), start_ms)
     logging.info(f"> Elapsed: {elapsed_ms}ms")
@@ -276,12 +304,13 @@ def reconnect_wifi(ssid, password, country, hostname=None):
         wlan.disconnect()
         wlan.active(False)
       except:
-        pass  # Best effort cleanup
-    raise  # Re-raise the exception
+        pass
+    raise
+
 
 def connect_to_wifi():
-  max_retries = 2
-  retry_delay = 2  # seconds
+  max_retries = 3  # Increased from 2 to 3
+  retry_delay = 5  # Increased from 2 to 5 seconds
   
   for attempt in range(max_retries):
     try:
@@ -292,22 +321,31 @@ def connect_to_wifi():
       logging.info(f"> connecting to wifi network '{config.wifi_ssid}'")
       elapsed_ms = reconnect_wifi(config.wifi_ssid, config.wifi_password, config.wifi_country)
       
-      # a slow connection time will drain the battery faster and may
-      # indicate a poor quality connection
       seconds_to_connect = elapsed_ms / 1000
-      if seconds_to_connect > 5:
-        logging.warn("  - took", seconds_to_connect, "seconds to connect to wifi")
+      if seconds_to_connect > 10:
+        logging.warn(f"  - took {seconds_to_connect} seconds to connect to wifi")
+        logging.warn(f"  - slow connection may indicate weak signal or network issues")
       return True
       
     except Exception as x:
-      logging.error(f"! Connection attempt {attempt + 1} failed: {x}")
-      # Cleanup between retries
+      error_msg = str(x)
+      logging.error(f"! Connection attempt {attempt + 1} failed: {error_msg}")
+      
+      # Check if it's a DHCP issue specifically
+      if "DHCP timeout" in error_msg or "no IP address" in error_msg:
+        logging.error("! DHCP failure detected - possible causes:")
+        logging.error("!   - Weak WiFi signal (device too far from router)")
+        logging.error("!   - Router DHCP pool exhausted")
+        logging.error("!   - Router temporarily blocking device")
+        logging.error("!   - Network congestion")
+      
+      # Cleanup between retries - force a complete reset
       try:
         import network
         wlan = network.WLAN(network.STA_IF)
         wlan.disconnect()
         wlan.active(False)
-        time.sleep(1)
+        time.sleep(2)  # Longer delay to let WiFi fully reset
       except:
         pass
       
@@ -378,11 +416,11 @@ def sync_clock_from_ntp():
     return False
   
   try:
-    # Set a timeout for NTP fetch
+    # Increase timeout for NTP fetch
     timestamp = ntp.fetch()
     if not timestamp:
       logging.error("  - failed to fetch time from ntp server")
-      return False  
+      return False
 
     # fixes an issue where sometimes the RTC would not pick up the new time
     i2c.writeto_mem(0x51, 0x00, b'\x10') # reset the rtc so we can change the time
@@ -402,7 +440,7 @@ def sync_clock_from_ntp():
     
     # write out the sync time log
     with open("sync_time.txt", "w") as syncfile:
-      syncfile.write("{0:04d}-{1:02d}-{2:02d}T{3:02d}:{4:02d}:{5:02d}Z".format(*timestamp))  
+      syncfile.write("{0:04d}-{1:02d}-{2:02d}T{3:02d}:{4:02d}:{5:02d}Z".format(*timestamp))
 
     return True
     
