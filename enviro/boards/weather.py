@@ -218,5 +218,6 @@ def get_sensor_readings(seconds_since_last, is_usb_power):
     "wind_speed": wind_speed(),
     "wind_direction": wind_direction(),
     "rain": rain,
-    "rain_rate": rain_per_second  # Changed from rain_per_second
+    "rain_rate": rain_per_second,  # Changed from rain_per_second
+    "signal_strength": None # will be filled in by the upload process
   })

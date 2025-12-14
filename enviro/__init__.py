@@ -153,7 +153,11 @@ print("")
 print("    -  --  ---- -----=--==--===  hey enviro, let's go!  ===--==--=----- ----  --  -     ")
 print("")
 
+
+last_signal_strength = None
+
 def reconnect_wifi(ssid, password, country, hostname=None):
+  global last_signal_strength
   import time
   import network
   import math
@@ -282,6 +286,7 @@ def reconnect_wifi(ssid, password, country, hostname=None):
       # Get RSSI (Received Signal Strength Indicator)
       # Note: This may not be available on all Pico W firmware versions
       status_info = wlan.status('rssi')
+      last_signal_strength = status_info
       logging.info(f"> Signal strength: {status_info} dBm")
       
       # Warn if signal is weak
@@ -592,7 +597,12 @@ def upload_readings():
     for cache_file in os.ilistdir("uploads"):
       try:
         with open(f"uploads/{cache_file[0]}", "r") as upload_file:
-          status = destination_module.upload_reading(ujson.load(upload_file))
+          payload = ujson.load(upload_file)
+          # inject the signal strength if we have it
+          if last_signal_strength is not None:
+              payload["signal_strength"] = last_signal_strength
+          
+          status = destination_module.upload_reading(payload)
           if status == UPLOAD_SUCCESS:
             os.remove(f"uploads/{cache_file[0]}")
             logging.info(f"  - uploaded {cache_file[0]}")
